@@ -34,6 +34,7 @@ export class CrossCritiqueProtocol {
       task,
     );
 
+    // Write discipline: write artifacts to disk FIRST, then track names
     const blueDraftName = `${phase}-blue-${blueShort}.md`;
     const redDraftName = `${phase}-red-${redShort}.md`;
     await this.store.writeArtifact(ticketId, blueDraftName, blueResult.content);
@@ -86,12 +87,14 @@ export class CrossCritiqueProtocol {
       allArtifacts,
     );
 
+    // Write discipline: synthesis artifact written to disk before returning
     const synthesisName = `${phase}-awacs-synthesis.md`;
     await this.store.writeArtifact(ticketId, synthesisName, synthesis.content);
     artifacts.push(synthesisName);
 
     logger.info(chalk.green(`AWACS cycle complete for ${phase}. ${artifacts.length} artifacts produced.`));
 
+    // All artifact writes succeeded — safe to return result
     return {
       synthesis: synthesis.content,
       artifacts,

@@ -5,6 +5,8 @@ import { GateChecker } from './gates.js';
 import { CrossCritiqueProtocol } from '../critique/protocol.js';
 import { ArtifactStore } from '../artifacts/store.js';
 import { SortieState } from '../state/sortie.js';
+import { CopIndex } from '../artifacts/cop-index.js';
+import { SortieConsolidator } from '../artifacts/consolidator.js';
 import { buildPhaseSystemPrompt } from '../critique/prompts.js';
 import { logger } from '../utils/logger.js';
 import chalk from 'chalk';
@@ -20,12 +22,16 @@ export class KillChainRunner {
   private store: ArtifactStore;
   private gates: GateChecker;
   private critique: CrossCritiqueProtocol;
+  private copIndex: CopIndex;
+  private consolidator: SortieConsolidator;
 
   constructor(config: AwacsConfig) {
     this.config = config;
     this.store = new ArtifactStore(config.artifacts.baseDir);
     this.gates = new GateChecker(this.store);
     this.critique = new CrossCritiqueProtocol(config);
+    this.copIndex = new CopIndex(config.artifacts.baseDir);
+    this.consolidator = new SortieConsolidator(config.artifacts.baseDir);
   }
 
   async runSortie(ticketId: string, taskDescription: string, opts?: RunnerOptions): Promise<void> {
@@ -37,6 +43,11 @@ export class KillChainRunner {
       red: this.config.models.red.id,
       arbiter: this.config.models.arbiter.id,
     });
+
+    // On resume, verify state integrity
+    if (opts?.resume) {
+      await state.verify(this.store);
+    }
 
     console.log(chalk.bold.cyan('\n╔══════════════════════════════════════════╗'));
     console.log(chalk.bold.cyan('║          AWACS SORTIE INITIATED          ║'));
@@ -73,6 +84,14 @@ export class KillChainRunner {
     }
 
     if (state.isComplete()) {
+      // Auto-consolidate when all phases complete
+      try {
+        const result = await this.consolidator.consolidate(ticketId);
+        console.log(chalk.dim(`  Consolidated: ${result.archived.length} files archived to _raw/`));
+      } catch (err) {
+        logger.warn(`Consolidation failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
       console.log(chalk.bold.green('\n✓ Sortie complete.'));
     } else {
       console.log(chalk.yellow('\nSortie paused. Resume with --resume.'));
@@ -106,7 +125,7 @@ export class KillChainRunner {
     task: string,
     state: SortieState,
   ): Promise<void> {
-    // Gather context from prior phases
+    // Gather context from prior phases + COP index
     const context = await this.gatherPriorContext(ticketId, phase);
     const systemPrompt = buildPhaseSystemPrompt(phase, context);
 
@@ -114,15 +133,22 @@ export class KillChainRunner {
     try {
       const result = await this.critique.runCycle(phase, ticketId, task, systemPrompt);
 
-      await state.updatePhase(phase, 'synthesizing');
-
-      // Gate check
+      // Gate check — synthesis must exist on disk before updating state
       const gate = await this.gates.checkSynthesisExists(ticketId, phase);
       if (!gate.passed) {
         await state.updatePhase(phase, 'failed');
         throw new Error(`Gate failed for ${phase}: ${gate.reason}`);
       }
 
+      // Write discipline: artifact writes happened in runCycle, now update COP, then state
+      const synthesisFile = `${phase}-awacs-synthesis.md`;
+      const synthesisContent = result.synthesis;
+      const sizeBytes = Buffer.byteLength(synthesisContent, 'utf-8');
+
+      await this.copIndex.addArtifact(ticketId, synthesisFile, sizeBytes, `merged ${phase} synthesis`);
+      await this.copIndex.update(ticketId, phase, 'complete', synthesisFile, this.summarizeFindings(synthesisContent));
+
+      // State update LAST — only after artifact + COP writes succeed
       await state.updatePhase(phase, 'complete');
       console.log(chalk.green(`  ✓ ${phase} complete — ${result.artifacts.length} artifacts`));
     } catch (err) {
@@ -157,7 +183,14 @@ export class KillChainRunner {
       const result = await dispatcher.dispatchSingle('blue', systemPrompt, task);
 
       const blueShort = this.config.models.blue.shortName;
-      await this.store.writeArtifact(ticketId, `${phase}-blue-${blueShort}.md`, result.content);
+      const artifactName = `${phase}-blue-${blueShort}.md`;
+
+      // Write discipline: artifact first, then COP, then state
+      await this.store.writeArtifact(ticketId, artifactName, result.content);
+      const sizeBytes = Buffer.byteLength(result.content, 'utf-8');
+      await this.copIndex.addArtifact(ticketId, artifactName, sizeBytes, `${phase} single-model output`);
+      await this.copIndex.update(ticketId, phase, 'complete', artifactName, 'single-model output');
+
       await state.updatePhase(phase, 'complete');
       console.log(chalk.green(`  ✓ ${phase} complete (single model)`));
     } catch (err) {
@@ -170,6 +203,12 @@ export class KillChainRunner {
     const phaseDef = getPhaseDefinition(currentPhase);
     const contextParts: string[] = [];
 
+    // Inject COP index for cross-phase awareness
+    const copContent = await this.copIndex.read(ticketId);
+    if (copContent) {
+      contextParts.push(`### Common Operating Picture\n\n${copContent}`);
+    }
+
     for (const dep of phaseDef.dependsOn) {
       const depDef = getPhaseDefinition(dep);
       if (depDef.synthesisArtifact) {
@@ -181,5 +220,19 @@ export class KillChainRunner {
     }
 
     return contextParts.length > 0 ? contextParts.join('\n\n') : undefined;
+  }
+
+  private summarizeFindings(synthesisContent: string): string {
+    // Extract confidence distribution from synthesis content
+    const highCount = (synthesisContent.match(/\bHIGH\b/g) ?? []).length;
+    const mediumCount = (synthesisContent.match(/\bMEDIUM\b/g) ?? []).length;
+    const contestedCount = (synthesisContent.match(/\bCONTESTED\b/g) ?? []).length;
+
+    const parts: string[] = [];
+    if (highCount > 0) parts.push(`${highCount} HIGH`);
+    if (mediumCount > 0) parts.push(`${mediumCount} MEDIUM`);
+    if (contestedCount > 0) parts.push(`${contestedCount} CONTESTED`);
+
+    return parts.length > 0 ? `[${parts.join(', ')}]` : '[no findings extracted]';
   }
 }

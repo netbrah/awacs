@@ -5,6 +5,7 @@ import { loadConfig } from './config/loader.js';
 import { KillChainRunner } from './kill-chain/runner.js';
 import { ArtifactStore } from './artifacts/store.js';
 import { SortieState } from './state/sortie.js';
+import { SortieConsolidator } from './artifacts/consolidator.js';
 import { setLogLevel } from './utils/logger.js';
 import type { PhaseName } from './kill-chain/types.js';
 
@@ -115,6 +116,39 @@ program
       console.log();
     } catch (err) {
       console.error(chalk.red(`Error listing artifacts: ${err instanceof Error ? err.message : String(err)}`));
+      process.exit(1);
+    }
+  });
+
+program
+  .command('consolidate <ticket-id>')
+  .description('Archive intermediate artifacts to _raw/ subdirectory, keeping syntheses in place')
+  .action(async (ticketId: string) => {
+    try {
+      const config = await loadConfig();
+      const consolidator = new SortieConsolidator(config.artifacts.baseDir);
+
+      if (await consolidator.isConsolidated(ticketId)) {
+        console.log(chalk.yellow(`Sortie ${ticketId} is already consolidated.`));
+        return;
+      }
+
+      const result = await consolidator.consolidate(ticketId);
+
+      console.log(chalk.bold(`\nConsolidation for ${ticketId}:`));
+      console.log(chalk.green(`  Kept:     ${result.kept.length} files`));
+      console.log(chalk.dim(`  Archived: ${result.archived.length} files → _raw/`));
+      console.log(chalk.dim(`  Space:    ${(result.spaceSaved / 1024).toFixed(1)}KB freed from top-level\n`));
+
+      for (const f of result.kept) {
+        console.log(`  ${chalk.cyan('•')} ${f}`);
+      }
+      for (const f of result.archived) {
+        console.log(`  ${chalk.dim('→')} _raw/${f}`);
+      }
+      console.log();
+    } catch (err) {
+      console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
       process.exit(1);
     }
   });

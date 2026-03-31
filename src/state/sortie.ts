@@ -2,7 +2,9 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PhaseName, PhaseStatus } from '../kill-chain/types.js';
 import type { SortieConfig } from './types.js';
+import type { ArtifactStore } from '../artifacts/store.js';
 import { readYaml, writeYaml } from '../utils/yaml.js';
+import { getPhaseDefinition } from '../kill-chain/phases.js';
 import { logger } from '../utils/logger.js';
 
 const STATE_FILENAME = 'sortie-state.yaml';
@@ -101,5 +103,34 @@ export class SortieState {
 
   isComplete(): boolean {
     return ALL_PHASES.every(p => this.state.phases[p] === 'complete' || this.state.phases[p] === 'skipped');
+  }
+
+  async verify(store: ArtifactStore): Promise<PhaseName[]> {
+    const downgraded: PhaseName[] = [];
+
+    for (const phase of ALL_PHASES) {
+      if (this.state.phases[phase] !== 'complete') {
+        continue;
+      }
+
+      const def = getPhaseDefinition(phase);
+      if (!def.synthesisArtifact) {
+        // Phase has no required synthesis artifact — skip verification
+        continue;
+      }
+
+      const exists = await store.artifactExists(this.ticketId, def.synthesisArtifact);
+      if (!exists) {
+        logger.warn(`Verify: ${phase} marked complete but ${def.synthesisArtifact} missing — downgrading to failed`);
+        this.state.phases[phase] = 'failed';
+        downgraded.push(phase);
+      }
+    }
+
+    if (downgraded.length > 0) {
+      await this.save();
+    }
+
+    return downgraded;
   }
 }
