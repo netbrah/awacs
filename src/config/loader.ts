@@ -3,15 +3,24 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import YAML from 'yaml';
-import type { AwacsConfig, ModelConfig, PhasesConfig, PhaseMode } from './types.js';
+import type { AwacsConfig, ModelConfig, PhasesConfig, PhaseMode, HarnessName, HarnessOpts } from './types.js';
 
 const DEFAULT_CONFIG_PATH = join(homedir(), '.awacs', 'config.yaml');
+
+interface RawHarnessOpts {
+  executable?: string;
+  cwd?: string;
+  timeout?: number;
+  args?: string[];
+}
 
 interface RawModelConfig {
   id?: string;
   provider?: string;
   base_url?: string;
   api_key?: string;
+  harness?: string;
+  harness_opts?: RawHarnessOpts;
 }
 
 interface RawConfig {
@@ -68,12 +77,24 @@ function buildModelConfig(
   const baseUrl = envBaseUrl ?? resolveEnvVar(raw?.base_url) ?? process.env['OPENAI_BASE_URL'] ?? 'https://api.openai.com/v1';
   const apiKey = envApiKey ?? resolveEnvVar(raw?.api_key) ?? process.env['OPENAI_API_KEY'] ?? '';
 
+  const harness = raw?.harness as HarnessName | undefined;
+  const harnessOpts: HarnessOpts | undefined = raw?.harness_opts
+    ? {
+        executable: raw.harness_opts.executable,
+        cwd: raw.harness_opts.cwd,
+        timeout: raw.harness_opts.timeout,
+        args: raw.harness_opts.args,
+      }
+    : undefined;
+
   return {
     id,
     provider: raw?.provider ?? 'openai',
     baseUrl,
     apiKey,
     shortName: deriveShortName(id),
+    ...(harness !== undefined ? { harness } : {}),
+    ...(harnessOpts !== undefined ? { harnessOpts } : {}),
   };
 }
 
