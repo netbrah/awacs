@@ -4,6 +4,13 @@ export interface ModelConfig {
   baseUrl: string;
   apiKey: string;
   shortName: string;
+  harness?: string;
+  harnessOpts?: {
+    command?: string;
+    args?: string[];
+    cwd?: string;
+    timeout?: number;
+  };
 }
 
 export type PhaseMode = 'awacs' | 'single';

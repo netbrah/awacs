@@ -7,11 +7,20 @@ import type { AwacsConfig, ModelConfig, PhasesConfig, PhaseMode } from './types.
 
 const DEFAULT_CONFIG_PATH = join(homedir(), '.awacs', 'config.yaml');
 
+interface RawHarnessOpts {
+  command?: string;
+  args?: string[];
+  cwd?: string;
+  timeout?: number;
+}
+
 interface RawModelConfig {
   id?: string;
   provider?: string;
   base_url?: string;
   api_key?: string;
+  harness?: string;
+  harness_opts?: RawHarnessOpts;
 }
 
 interface RawConfig {
@@ -74,6 +83,8 @@ function buildModelConfig(
     baseUrl,
     apiKey,
     shortName: deriveShortName(id),
+    ...(raw?.harness !== undefined && { harness: raw.harness }),
+    ...(raw?.harness_opts !== undefined && { harnessOpts: raw.harness_opts }),
   };
 }
 

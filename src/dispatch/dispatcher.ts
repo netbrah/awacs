@@ -1,18 +1,25 @@
 import type { AwacsConfig } from '../config/types.js';
 import type { DispatchResult, ModelResponse } from './types.js';
-import { ModelClient } from './model-client.js';
+import { createHarness } from '../harness/registry.js';
+import type { AgentHarness } from '../harness/types.js';
 import { logger } from '../utils/logger.js';
 
 export type ModelRole = 'blue' | 'red' | 'arbiter';
 
 export class AwacsDispatcher {
-  private clients: Record<ModelRole, ModelClient>;
+  private harnesses: Record<ModelRole, AgentHarness>;
+  private modelIds: Record<ModelRole, string>;
 
   constructor(config: AwacsConfig) {
-    this.clients = {
-      blue: new ModelClient(config.models.blue),
-      red: new ModelClient(config.models.red),
-      arbiter: new ModelClient(config.models.arbiter),
+    this.modelIds = {
+      blue: config.models.blue.id,
+      red: config.models.red.id,
+      arbiter: config.models.arbiter.id,
+    };
+    this.harnesses = {
+      blue: createHarness(config.models.blue.harness ?? 'raw-llm', config.models.blue),
+      red: createHarness(config.models.red.harness ?? 'raw-llm', config.models.red),
+      arbiter: createHarness(config.models.arbiter.harness ?? 'raw-llm', config.models.arbiter),
     };
   }
 
@@ -21,28 +28,26 @@ export class AwacsDispatcher {
     userMessage: string,
   ): Promise<DispatchResult> {
     logger.info('Dispatching to Blue and Red in parallel...');
-    const start = Date.now();
 
-    const [blueContent, redContent] = await Promise.all([
-      this.clients.blue.chat(systemPrompt, userMessage),
-      this.clients.red.chat(systemPrompt, userMessage),
+    const [blueResult, redResult] = await Promise.all([
+      this.harnesses.blue.run({ task: userMessage, systemPrompt }),
+      this.harnesses.red.run({ task: userMessage, systemPrompt }),
     ]);
 
-    const elapsed = Date.now() - start;
-    logger.info(`Both models responded in ${elapsed}ms`);
+    logger.info(`Blue responded in ${blueResult.durationMs}ms, Red in ${redResult.durationMs}ms`);
 
     return {
       blue: {
-        content: blueContent,
-        model: this.clients.blue.getModelId(),
+        content: blueResult.content,
+        model: this.modelIds.blue,
         role: 'blue',
-        durationMs: elapsed,
+        durationMs: blueResult.durationMs,
       },
       red: {
-        content: redContent,
-        model: this.clients.red.getModelId(),
+        content: redResult.content,
+        model: this.modelIds.red,
         role: 'red',
-        durationMs: elapsed,
+        durationMs: redResult.durationMs,
       },
     };
   }
@@ -53,16 +58,16 @@ export class AwacsDispatcher {
     userMessage: string,
   ): Promise<ModelResponse> {
     logger.info(`Dispatching to ${role}...`);
-    const start = Date.now();
 
-    const content = await this.clients[role].chat(systemPrompt, userMessage);
-    const elapsed = Date.now() - start;
+    const result = await this.harnesses[role].run({ task: userMessage, systemPrompt });
+
+    logger.info(`${role} responded in ${result.durationMs}ms`);
 
     return {
-      content,
-      model: this.clients[role].getModelId(),
+      content: result.content,
+      model: this.modelIds[role],
       role: role === 'arbiter' ? 'arbiter' : role,
-      durationMs: elapsed,
+      durationMs: result.durationMs,
     };
   }
 }
