@@ -1,9 +1,15 @@
+import type { HarnessName, HarnessOpts } from '../harness/types.js';
+
+export type { HarnessName, HarnessOpts };
+
 export interface ModelConfig {
   id: string;
   provider: string;
   baseUrl: string;
   apiKey: string;
   shortName: string;
+  harness?: HarnessName;
+  harnessOpts?: HarnessOpts;
 }
 
 export type PhaseMode = 'awacs' | 'single';
